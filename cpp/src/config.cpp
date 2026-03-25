@@ -1,13 +1,12 @@
 #include "config.h"
 #include "env.h"
+#include "platform.h"
 #include "timezone.h"
 
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
-#include <pwd.h>
 #include <regex>
-#include <unistd.h>
 
 namespace nanoclaw {
 
@@ -22,11 +21,7 @@ static std::string get_env(const char* key, const std::string& fallback = "") {
 }
 
 static std::string get_home_dir() {
-    const char* home = std::getenv("HOME");
-    if (home) return home;
-    struct passwd* pw = getpwuid(getuid());
-    if (pw) return pw->pw_dir;
-    return "/tmp";
+    return platform::get_home_dir();
 }
 
 static std::string escape_regex(const std::string& str) {

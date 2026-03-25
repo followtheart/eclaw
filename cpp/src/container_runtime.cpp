@@ -1,15 +1,11 @@
 #include "container_runtime.h"
 #include "logger.h"
+#include "platform.h"
 
-#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
-
-#ifdef __linux__
-#include <sys/utsname.h>
-#endif
 
 namespace nanoclaw {
 
@@ -31,21 +27,9 @@ std::string stop_container_cmd(const std::string& name) {
     return CONTAINER_RUNTIME_BIN + " stop -t 1 " + name;
 }
 
-static std::string exec_cmd(const std::string& cmd) {
-    std::array<char, 4096> buffer;
-    std::string result;
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return "";
-    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
-        result += buffer.data();
-    }
-    pclose(pipe);
-    return result;
-}
-
 void ensure_container_runtime_running() {
-    std::string cmd = CONTAINER_RUNTIME_BIN + " info 2>/dev/null";
-    int ret = std::system(cmd.c_str());
+    std::string cmd = platform::suppress_stderr(CONTAINER_RUNTIME_BIN + " info");
+    int ret = platform::system_command(cmd);
     if (ret != 0) {
         logger()->error("Failed to reach container runtime");
         fprintf(stderr, "\n"
@@ -64,8 +48,9 @@ void ensure_container_runtime_running() {
 
 void cleanup_orphans() {
     try {
-        std::string cmd = CONTAINER_RUNTIME_BIN + " ps --filter name=nanoclaw- --format '{{.Names}}' 2>/dev/null";
-        auto output = exec_cmd(cmd);
+        std::string cmd = platform::suppress_stderr(
+            CONTAINER_RUNTIME_BIN + " ps --filter name=nanoclaw- --format '{{.Names}}'");
+        auto output = platform::exec_command(cmd);
 
         std::vector<std::string> orphans;
         std::istringstream stream(output);
@@ -75,7 +60,7 @@ void cleanup_orphans() {
         }
 
         for (const auto& name : orphans) {
-            std::system(stop_container_cmd(name).c_str());
+            platform::system_command(stop_container_cmd(name));
         }
 
         if (!orphans.empty()) {

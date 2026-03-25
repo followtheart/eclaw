@@ -13,6 +13,7 @@
 #include "group_queue.h"
 #include "ipc.h"
 #include "logger.h"
+#include "platform.h"
 #include "remote_control.h"
 #include "router.h"
 #include "sender_allowlist.h"
@@ -383,9 +384,19 @@ static void handle_remote_control(
 // --- Signal handling ---
 static std::atomic<bool> g_shutdown_requested{false};
 
-static void signal_handler(int sig) {
+static void signal_handler(int /*sig*/) {
     g_shutdown_requested = true;
 }
+
+#ifdef _WIN32
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
+    if (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT || ctrl_type == CTRL_CLOSE_EVENT) {
+        g_shutdown_requested = true;
+        return TRUE;
+    }
+    return FALSE;
+}
+#endif
 
 // --- Main ---
 int main(int argc, char* argv[]) {
@@ -409,8 +420,12 @@ int main(int argc, char* argv[]) {
     restore_remote_control();
 
     // Signal handlers
-    signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+#else
+    signal(SIGTERM, signal_handler);
+#endif
 
     // Channel callbacks
     ChannelOpts channel_opts;

@@ -14,6 +14,7 @@ find_package(httplib CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(croncpp CONFIG REQUIRED)
 find_package(TgBot CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 # Collect all source files
 file(GLOB_RECURSE SOURCES "src/*.cpp")
@@ -31,8 +32,17 @@ target_link_libraries(nanoclaw PRIVATE
     yaml-cpp::yaml-cpp
     croncpp::croncpp
     TgBot::TgBot
-    pthread
+    Threads::Threads
 )
+
+if(WIN32)
+    target_link_libraries(nanoclaw PRIVATE ws2_32 shell32)
+    target_compile_definitions(nanoclaw PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        _CRT_SECURE_NO_WARNINGS
+    )
+endif()
 
 # Install target
 install(TARGETS nanoclaw RUNTIME DESTINATION bin)

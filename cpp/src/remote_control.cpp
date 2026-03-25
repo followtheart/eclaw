@@ -1,21 +1,18 @@
 #include "remote_control.h"
 #include "config.h"
 #include "logger.h"
+#include "platform.h"
 #include "timezone.h"
 
 #include <nlohmann/json.hpp>
 
 #include <chrono>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <regex>
-#include <sys/wait.h>
 #include <thread>
-#include <unistd.h>
 
 namespace nanoclaw {
 
@@ -23,6 +20,9 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 static std::optional<RemoteControlSession> g_active_session;
+#ifdef _WIN32
+static HANDLE g_active_process_handle = INVALID_HANDLE_VALUE;
+#endif
 
 static const std::regex URL_REGEX(R"(https://claude\.ai/code\S+)");
 static const int URL_TIMEOUT_MS = 30000;
@@ -38,10 +38,6 @@ static std::string stderr_file() {
     return (fs::path(config().data_dir) / "remote-control.stderr").string();
 }
 
-static bool is_process_alive(int pid) {
-    return kill(pid, 0) == 0;
-}
-
 static void save_state(const RemoteControlSession& session) {
     fs::create_directories(fs::path(state_file()).parent_path());
     json j;
@@ -55,6 +51,12 @@ static void save_state(const RemoteControlSession& session) {
 
 static void clear_state() {
     try { fs::remove(state_file()); } catch (...) {}
+#ifdef _WIN32
+    if (g_active_process_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_active_process_handle);
+        g_active_process_handle = INVALID_HANDLE_VALUE;
+    }
+#endif
 }
 
 void restore_remote_control() {
@@ -70,7 +72,7 @@ void restore_remote_control() {
         session.started_in_chat = j.value("startedInChat", "");
         session.started_at = j.value("startedAt", "");
 
-        if (session.pid > 0 && is_process_alive(session.pid)) {
+        if (session.pid > 0 && platform::is_process_alive(session.pid)) {
             g_active_session = session;
             logger()->info("Restored Remote Control session: pid={}, url={}", session.pid, session.url);
         } else {
@@ -91,7 +93,7 @@ RemoteControlResult start_remote_control(
     const std::string& cwd)
 {
     if (g_active_session) {
-        if (is_process_alive(g_active_session->pid)) {
+        if (platform::is_process_alive(g_active_session->pid)) {
             return {true, g_active_session->url, ""};
         }
         g_active_session.reset();
@@ -100,57 +102,27 @@ RemoteControlResult start_remote_control(
 
     fs::create_directories(config().data_dir);
 
-    int stdout_fd = open(stdout_file().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    int stderr_fd = open(stderr_file().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (stdout_fd < 0 || stderr_fd < 0) {
-        if (stdout_fd >= 0) close(stdout_fd);
-        if (stderr_fd >= 0) close(stderr_fd);
-        return {false, "", "Failed to open output files"};
+    auto daemon = platform::spawn_daemon(
+        "claude",
+        {"remote-control", "--name", "NanoClaw Remote"},
+        cwd,
+        stdout_file(),
+        stderr_file(),
+        "y\n");
+
+    if (!daemon.success) {
+        return {false, "", daemon.error};
     }
 
-    int stdin_pipe[2];
-    if (pipe(stdin_pipe) < 0) {
-        close(stdout_fd);
-        close(stderr_fd);
-        return {false, "", "Failed to create pipe"};
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(stdout_fd);
-        close(stderr_fd);
-        close(stdin_pipe[0]);
-        close(stdin_pipe[1]);
-        return {false, "", "Failed to fork"};
-    }
-
-    if (pid == 0) {
-        // Child
-        setsid();
-        close(stdin_pipe[1]);
-        dup2(stdin_pipe[0], STDIN_FILENO);
-        dup2(stdout_fd, STDOUT_FILENO);
-        dup2(stderr_fd, STDERR_FILENO);
-        close(stdin_pipe[0]);
-        close(stdout_fd);
-        close(stderr_fd);
-
-        if (chdir(cwd.c_str()) != 0) _exit(1);
-        execlp("claude", "claude", "remote-control", "--name", "NanoClaw Remote", nullptr);
-        _exit(127);
-    }
-
-    // Parent
-    close(stdin_pipe[0]);
-    write(stdin_pipe[1], "y\n", 2);
-    close(stdin_pipe[1]);
-    close(stdout_fd);
-    close(stderr_fd);
+    pid_t pid = daemon.pid;
+#ifdef _WIN32
+    g_active_process_handle = daemon.process_handle;
+#endif
 
     // Poll for URL
     auto start = std::chrono::steady_clock::now();
     while (true) {
-        if (!is_process_alive(pid)) {
+        if (!platform::is_process_alive(pid)) {
             return {false, "", "Process exited before producing URL"};
         }
 
@@ -174,7 +146,7 @@ RemoteControlResult start_remote_control(
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start).count();
         if (elapsed >= URL_TIMEOUT_MS) {
-            kill(pid, SIGTERM);
+            platform::terminate_process(pid);
             return {false, "", "Timed out waiting for Remote Control URL"};
         }
 
@@ -187,7 +159,7 @@ RemoteControlResult stop_remote_control() {
         return {false, "", "No active Remote Control session"};
     }
 
-    kill(g_active_session->pid, SIGTERM);
+    platform::terminate_process(g_active_session->pid);
     logger()->info("Remote Control session stopped: pid={}", g_active_session->pid);
     g_active_session.reset();
     clear_state();

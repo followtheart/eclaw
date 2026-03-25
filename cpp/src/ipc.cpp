@@ -3,6 +3,7 @@
 #include "db.h"
 #include "group_folder.h"
 #include "logger.h"
+#include "platform.h"
 #include "timezone.h"
 
 #include <croncpp.h>
@@ -55,7 +56,7 @@ static void process_task_ipc(
                 auto cron = cron::make_cron(schedule_value);
                 auto next = cron::cron_next(cron, std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
                 struct tm tm_utc;
-                gmtime_r(&next, &tm_utc);
+                platform::gmtime_safe(&next, &tm_utc);
                 char buf[64];
                 strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &tm_utc);
                 next_run = std::string(buf);
@@ -70,7 +71,7 @@ static void process_task_ipc(
             auto next_time = std::chrono::system_clock::now() + std::chrono::milliseconds(ms);
             auto t = std::chrono::system_clock::to_time_t(next_time);
             struct tm tm_utc;
-            gmtime_r(&t, &tm_utc);
+            platform::gmtime_safe(&t, &tm_utc);
             char buf[64];
             strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &tm_utc);
             next_run = std::string(buf);
@@ -145,7 +146,7 @@ static void process_task_ipc(
                     auto cron = cron::make_cron(updated_task.schedule_value);
                     auto next = cron::cron_next(cron, std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
                     struct tm tm_utc;
-                    gmtime_r(&next, &tm_utc);
+                    platform::gmtime_safe(&next, &tm_utc);
                     char buf[64];
                     strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &tm_utc);
                     updates.next_run = std::string(buf);
@@ -157,7 +158,7 @@ static void process_task_ipc(
                     auto next_time = std::chrono::system_clock::now() + std::chrono::milliseconds(ms);
                     auto t = std::chrono::system_clock::to_time_t(next_time);
                     struct tm tm_utc;
-                    gmtime_r(&t, &tm_utc);
+                    platform::gmtime_safe(&t, &tm_utc);
                     char buf[64];
                     strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &tm_utc);
                     updates.next_run = std::string(buf);
