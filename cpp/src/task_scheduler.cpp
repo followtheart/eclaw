@@ -4,6 +4,7 @@
 #include "db.h"
 #include "group_folder.h"
 #include "logger.h"
+#include "platform.h"
 #include "timezone.h"
 
 #include <croncpp.h>
@@ -30,7 +31,7 @@ std::optional<std::string> compute_next_run(const ScheduledTask& task) {
             // Format as ISO 8601
             struct tm tm_utc;
             time_t t = next;
-            gmtime_r(&t, &tm_utc);
+            platform::gmtime_safe(&t, &tm_utc);
             char buf[64];
             strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &tm_utc);
             return std::string(buf);
@@ -48,7 +49,7 @@ std::optional<std::string> compute_next_run(const ScheduledTask& task) {
             auto next_time = now + std::chrono::minutes(1);
             auto t = std::chrono::system_clock::to_time_t(next_time);
             struct tm tm_utc;
-            gmtime_r(&t, &tm_utc);
+            platform::gmtime_safe(&t, &tm_utc);
             char buf[64];
             strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &tm_utc);
             return std::string(buf);
@@ -58,16 +59,16 @@ std::optional<std::string> compute_next_run(const ScheduledTask& task) {
         // Parse next_run
         struct tm tm_next = {};
         if (task.next_run) {
-            strptime(task.next_run->c_str(), "%Y-%m-%dT%H:%M:%S", &tm_next);
+            platform::strptime_portable(task.next_run->c_str(), "%Y-%m-%dT%H:%M:%S", &tm_next);
         }
-        int64_t next = timegm(&tm_next) * 1000LL + ms;
+        int64_t next = platform::timegm_portable(&tm_next) * 1000LL + ms;
         while (next <= now_ms) {
             next += ms;
         }
 
         time_t next_sec = next / 1000;
         struct tm tm_utc;
-        gmtime_r(&next_sec, &tm_utc);
+        platform::gmtime_safe(&next_sec, &tm_utc);
         char buf[64];
         strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000Z", &tm_utc);
         return std::string(buf);

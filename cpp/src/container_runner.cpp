@@ -4,6 +4,7 @@
 #include "group_folder.h"
 #include "logger.h"
 #include "mount_security.h"
+#include "platform.h"
 #include "timezone.h"
 
 #include <nlohmann/json.hpp>
@@ -15,8 +16,6 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace nanoclaw {
 
@@ -38,7 +37,11 @@ static std::vector<VolumeMount> build_volume_mounts(const RegisteredGroup& group
         // Shadow .env
         auto env_file = fs::path(project_root) / ".env";
         if (fs::exists(env_file)) {
+#ifdef _WIN32
+            mounts.push_back({"NUL", "/workspace/project/.env", true});
+#else
             mounts.push_back({"/dev/null", "/workspace/project/.env", true});
+#endif
         }
 
         mounts.push_back({group_dir, "/workspace/group", false});
@@ -120,8 +123,8 @@ static std::vector<std::string> build_container_args(
     args.insert(args.end(), gw_args.begin(), gw_args.end());
 
     // Run as host user
-    uid_t uid = getuid();
-    gid_t gid = getgid();
+    auto uid = platform::get_uid();
+    auto gid = platform::get_gid();
     if (uid != 0 && uid != 1000) {
         args.push_back("--user");
         args.push_back(std::to_string(uid) + ":" + std::to_string(gid));
@@ -184,53 +187,17 @@ ContainerOutput run_container_agent(
     if (!input.assistant_name.empty()) input_json["assistantName"] = input.assistant_name;
     std::string input_str = input_json.dump();
 
-    // Create pipes for stdin/stdout/stderr
-    int stdin_pipe[2], stdout_pipe[2], stderr_pipe[2];
-    if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0 || pipe(stderr_pipe) < 0) {
-        return {"error", std::nullopt, std::nullopt, "Failed to create pipes"};
+    // Spawn container process
+    auto proc = platform::spawn_process(CONTAINER_RUNTIME_BIN, container_args);
+    if (!proc.success) {
+        return {"error", std::nullopt, std::nullopt, proc.error};
     }
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        return {"error", std::nullopt, std::nullopt, "Failed to fork"};
-    }
-
-    if (pid == 0) {
-        // Child process
-        close(stdin_pipe[1]);
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-
-        dup2(stdin_pipe[0], STDIN_FILENO);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        dup2(stderr_pipe[1], STDERR_FILENO);
-
-        close(stdin_pipe[0]);
-        close(stdout_pipe[1]);
-        close(stderr_pipe[1]);
-
-        // Build argv
-        std::vector<const char*> argv;
-        argv.push_back(CONTAINER_RUNTIME_BIN.c_str());
-        for (const auto& arg : container_args) {
-            argv.push_back(arg.c_str());
-        }
-        argv.push_back(nullptr);
-
-        execvp(CONTAINER_RUNTIME_BIN.c_str(), const_cast<char* const*>(argv.data()));
-        _exit(127);
-    }
-
-    // Parent process
-    close(stdin_pipe[0]);
-    close(stdout_pipe[1]);
-    close(stderr_pipe[1]);
-
-    on_process(pid, container_name);
+    on_process(proc.pid, container_name);
 
     // Write input to stdin and close
-    write(stdin_pipe[1], input_str.c_str(), input_str.size());
-    close(stdin_pipe[1]);
+    platform::write_fd(proc.stdin_fd, input_str.c_str(), input_str.size());
+    platform::close_fd(proc.stdin_fd);
 
     // Read stdout and stderr
     std::string stdout_buf, stderr_buf;
@@ -238,26 +205,18 @@ ContainerOutput run_container_agent(
     std::optional<std::string> new_session_id;
     bool had_streaming_output = false;
 
-    // Use select() to read from both pipes
-    fd_set read_fds;
-    int max_fd = std::max(stdout_pipe[0], stderr_pipe[0]);
     bool stdout_open = true, stderr_open = true;
 
     while (stdout_open || stderr_open) {
-        FD_ZERO(&read_fds);
-        if (stdout_open) FD_SET(stdout_pipe[0], &read_fds);
-        if (stderr_open) FD_SET(stderr_pipe[0], &read_fds);
+        int ready = platform::select_read(
+            proc.stdout_fd, stdout_open,
+            proc.stderr_fd, stderr_open,
+            1000);
+        if (ready < 0) break;
 
-        struct timeval tv;
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-
-        int ret = select(max_fd + 1, &read_fds, nullptr, nullptr, &tv);
-        if (ret < 0) break;
-
-        if (stdout_open && FD_ISSET(stdout_pipe[0], &read_fds)) {
+        if (stdout_open && (ready & 1)) {
             char buf[4096];
-            ssize_t n = read(stdout_pipe[0], buf, sizeof(buf));
+            auto n = platform::read_fd(proc.stdout_fd, buf, sizeof(buf));
             if (n <= 0) {
                 stdout_open = false;
             } else {
@@ -306,9 +265,9 @@ ContainerOutput run_container_agent(
             }
         }
 
-        if (stderr_open && FD_ISSET(stderr_pipe[0], &read_fds)) {
+        if (stderr_open && (ready & 2)) {
             char buf[4096];
-            ssize_t n = read(stderr_pipe[0], buf, sizeof(buf));
+            auto n = platform::read_fd(proc.stderr_fd, buf, sizeof(buf));
             if (n <= 0) {
                 stderr_open = false;
             } else {
@@ -317,13 +276,11 @@ ContainerOutput run_container_agent(
         }
     }
 
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
+    platform::close_fd(proc.stdout_fd);
+    platform::close_fd(proc.stderr_fd);
 
     // Wait for child
-    int status = 0;
-    waitpid(pid, &status, 0);
-    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    int exit_code = platform::wait_for_process(proc);
 
     auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();

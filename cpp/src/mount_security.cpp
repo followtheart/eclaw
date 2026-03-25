@@ -1,6 +1,7 @@
 #include "mount_security.h"
 #include "config.h"
 #include "logger.h"
+#include "platform.h"
 
 #include <nlohmann/json.hpp>
 
@@ -8,9 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <pwd.h>
 #include <set>
-#include <unistd.h>
 
 namespace nanoclaw {
 
@@ -27,11 +26,7 @@ static std::optional<MountAllowlist> g_cached_allowlist;
 static bool g_load_attempted = false;
 
 static std::string get_home_dir() {
-    const char* home = std::getenv("HOME");
-    if (home) return home;
-    struct passwd* pw = getpwuid(getuid());
-    if (pw) return pw->pw_dir;
-    return "/tmp";
+    return platform::get_home_dir();
 }
 
 static std::string expand_path(const std::string& p) {
