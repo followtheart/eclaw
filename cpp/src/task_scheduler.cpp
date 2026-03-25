@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <thread>
 
 namespace nanoclaw {

@@ -6,8 +6,12 @@
  */
 
 #ifdef _WIN32
-  #define WIN32_LEAN_AND_MEAN
-  #define NOMINMAX
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
   #include <windows.h>
   #include <process.h>
   #include <io.h>
@@ -17,6 +21,7 @@
   using pid_t = int;
   using uid_t = unsigned int;
   using gid_t = unsigned int;
+    using ssize_t = SSIZE_T;
 #else
   #include <fcntl.h>
   #include <pwd.h>

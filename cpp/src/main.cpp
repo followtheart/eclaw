@@ -483,50 +483,50 @@ int main(int argc, char* argv[]) {
     }
 
     // Start subsystems
-    start_scheduler_loop({
-        .registered_groups = []() { return g_registered_groups; },
-        .get_sessions = []() { return g_sessions; },
-        .queue = &g_queue,
-        .on_process = [](const std::string& group_jid, pid_t pid, const std::string& cn, const std::string& gf) {
-            g_queue.register_process(group_jid, pid, cn, gf);
-        },
-        .send_message = [](const std::string& jid, const std::string& raw_text) {
-            auto* channel = find_channel(g_channels, jid);
-            if (!channel) return;
-            auto text = format_outbound(raw_text);
-            if (!text.empty()) channel->send_message(jid, text);
-        },
-    });
+    SchedulerDependencies scheduler_deps;
+    scheduler_deps.registered_groups = []() { return g_registered_groups; };
+    scheduler_deps.get_sessions = []() { return g_sessions; };
+    scheduler_deps.queue = &g_queue;
+    scheduler_deps.on_process = [](const std::string& group_jid, pid_t pid, const std::string& cn, const std::string& gf) {
+        g_queue.register_process(group_jid, pid, cn, gf);
+    };
+    scheduler_deps.send_message = [](const std::string& jid, const std::string& raw_text) {
+        auto* channel = find_channel(g_channels, jid);
+        if (!channel) return;
+        auto text = format_outbound(raw_text);
+        if (!text.empty()) channel->send_message(jid, text);
+    };
+    start_scheduler_loop(std::move(scheduler_deps));
 
-    start_ipc_watcher({
-        .send_message = [](const std::string& jid, const std::string& text) {
-            auto* channel = find_channel(g_channels, jid);
-            if (!channel) throw std::runtime_error("No channel for JID: " + jid);
-            channel->send_message(jid, text);
-        },
-        .registered_groups = []() { return g_registered_groups; },
-        .register_group = register_group,
-        .sync_groups = [](bool force) {
-            for (auto& ch : g_channels) {
-                ch->sync_groups(force);
-            }
-        },
-        .get_available_groups = get_available_groups,
-        .write_groups_snapshot = [](const std::string& gf, bool im, const std::vector<AvailableGroup>& ag, const std::set<std::string>& rj) {
-            write_groups_snapshot(gf, im, ag, rj);
-        },
-        .on_tasks_changed = []() {
-            auto tasks = get_all_tasks();
-            std::vector<TaskSnapshot> snapshots;
-            for (const auto& t : tasks) {
-                snapshots.push_back({t.id, t.group_folder, t.prompt, t.schedule_type,
-                    t.schedule_value, t.status, t.next_run});
-            }
-            for (const auto& [jid, group] : g_registered_groups) {
-                write_tasks_snapshot(group.folder, group.is_main.value_or(false), snapshots);
-            }
-        },
-    });
+    IpcDeps ipc_deps;
+    ipc_deps.send_message = [](const std::string& jid, const std::string& text) {
+        auto* channel = find_channel(g_channels, jid);
+        if (!channel) throw std::runtime_error("No channel for JID: " + jid);
+        channel->send_message(jid, text);
+    };
+    ipc_deps.registered_groups = []() { return g_registered_groups; };
+    ipc_deps.register_group = register_group;
+    ipc_deps.sync_groups = [](bool force) {
+        for (auto& ch : g_channels) {
+            ch->sync_groups(force);
+        }
+    };
+    ipc_deps.get_available_groups = get_available_groups;
+    ipc_deps.write_groups_snapshot = [](const std::string& gf, bool im, const std::vector<AvailableGroup>& ag, const std::set<std::string>& rj) {
+        write_groups_snapshot(gf, im, ag, rj);
+    };
+    ipc_deps.on_tasks_changed = []() {
+        auto tasks = get_all_tasks();
+        std::vector<TaskSnapshot> snapshots;
+        for (const auto& t : tasks) {
+            snapshots.push_back({t.id, t.group_folder, t.prompt, t.schedule_type,
+                t.schedule_value, t.status, t.next_run});
+        }
+        for (const auto& [jid, group] : g_registered_groups) {
+            write_tasks_snapshot(group.folder, group.is_main.value_or(false), snapshots);
+        }
+    };
+    start_ipc_watcher(std::move(ipc_deps));
 
     g_queue.set_process_messages_fn(process_group_messages);
     recover_pending_messages();
