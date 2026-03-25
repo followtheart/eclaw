@@ -20,13 +20,12 @@ struct Config {
     std::string groups_dir;
     std::string data_dir;
 
-    std::string container_image;
-    int container_timeout = 1800000; // 30min
-    int container_max_output_size = 10485760; // 10MB
+    std::string agent_runner_path; // path to agent-runner dist/index.js
+    int agent_timeout = 1800000; // 30min
     std::string onecli_url;
     int ipc_poll_interval = 1000; // ms
     int idle_timeout = 1800000; // 30min
-    int max_concurrent_containers = 5;
+    int max_concurrent_agents = 5;
 
     std::regex trigger_pattern;
     std::string timezone;

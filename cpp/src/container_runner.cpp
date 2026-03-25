@@ -1,6 +1,5 @@
 #include "container_runner.h"
 #include "config.h"
-#include "container_runtime.h"
 #include "group_folder.h"
 #include "logger.h"
 #include "mount_security.h"
@@ -25,34 +24,14 @@ using json = nlohmann::json;
 static const std::string OUTPUT_START_MARKER = "---NANOCLAW_OUTPUT_START---";
 static const std::string OUTPUT_END_MARKER = "---NANOCLAW_OUTPUT_END---";
 
-static std::vector<VolumeMount> build_volume_mounts(const RegisteredGroup& group, bool is_main) {
-    std::vector<VolumeMount> mounts;
+/**
+ * Prepare directories and environment for direct agent-runner execution.
+ * Returns the working directory (group dir) and sets up Claude sessions/skills.
+ */
+static std::string prepare_agent_environment(const RegisteredGroup& group, bool is_main) {
     auto project_root = fs::current_path().string();
     auto group_dir = resolve_group_folder_path(group.folder);
     const auto& cfg = config();
-
-    if (is_main) {
-        mounts.push_back({project_root, "/workspace/project", true});
-
-        // Shadow .env
-        auto env_file = fs::path(project_root) / ".env";
-        if (fs::exists(env_file)) {
-#ifdef _WIN32
-            mounts.push_back({"NUL", "/workspace/project/.env", true});
-#else
-            mounts.push_back({"/dev/null", "/workspace/project/.env", true});
-#endif
-        }
-
-        mounts.push_back({group_dir, "/workspace/group", false});
-    } else {
-        mounts.push_back({group_dir, "/workspace/group", false});
-
-        auto global_dir = (fs::path(cfg.groups_dir) / "global").string();
-        if (fs::exists(global_dir)) {
-            mounts.push_back({global_dir, "/workspace/global", true});
-        }
-    }
 
     // Per-group Claude sessions directory
     auto group_sessions_dir = (fs::path(cfg.data_dir) / "sessions" / group.folder / ".claude").string();
@@ -81,70 +60,20 @@ static std::vector<VolumeMount> build_volume_mounts(const RegisteredGroup& group
         }
     }
 
-    mounts.push_back({group_sessions_dir, "/home/node/.claude", false});
-
     // Per-group IPC namespace
     auto group_ipc_dir = resolve_group_ipc_path(group.folder);
     fs::create_directories(fs::path(group_ipc_dir) / "messages");
     fs::create_directories(fs::path(group_ipc_dir) / "tasks");
     fs::create_directories(fs::path(group_ipc_dir) / "input");
-    mounts.push_back({group_ipc_dir, "/workspace/ipc", false});
 
-    // Agent runner source
+    // Agent runner source — copy once
     auto agent_runner_src = (fs::path(project_root) / "container" / "agent-runner" / "src").string();
     auto group_agent_runner = (fs::path(cfg.data_dir) / "sessions" / group.folder / "agent-runner-src").string();
     if (!fs::exists(group_agent_runner) && fs::exists(agent_runner_src)) {
         fs::copy(agent_runner_src, group_agent_runner, fs::copy_options::recursive);
     }
-    mounts.push_back({group_agent_runner, "/app/src", false});
 
-    // Additional mounts
-    if (group.container_config) {
-        auto validated = validate_additional_mounts(group.container_config->additional_mounts, group.name, is_main);
-        mounts.insert(mounts.end(), validated.begin(), validated.end());
-    }
-
-    return mounts;
-}
-
-static std::vector<std::string> build_container_args(
-    const std::vector<VolumeMount>& mounts,
-    const std::string& container_name)
-{
-    std::vector<std::string> args = {"run", "-i", "--rm", "--name", container_name};
-    const auto& cfg = config();
-
-    // Timezone
-    args.push_back("-e");
-    args.push_back("TZ=" + cfg.timezone);
-
-    // Host gateway args
-    auto gw_args = host_gateway_args();
-    args.insert(args.end(), gw_args.begin(), gw_args.end());
-
-    // Run as host user
-    auto uid = platform::get_uid();
-    auto gid = platform::get_gid();
-    if (uid != 0 && uid != 1000) {
-        args.push_back("--user");
-        args.push_back(std::to_string(uid) + ":" + std::to_string(gid));
-        args.push_back("-e");
-        args.push_back("HOME=/home/node");
-    }
-
-    // Volume mounts
-    for (const auto& mount : mounts) {
-        if (mount.readonly) {
-            auto ro_args = readonly_mount_args(mount.host_path, mount.container_path);
-            args.insert(args.end(), ro_args.begin(), ro_args.end());
-        } else {
-            args.push_back("-v");
-            args.push_back(mount.host_path + ":" + mount.container_path);
-        }
-    }
-
-    args.push_back(cfg.container_image);
-    return args;
+    return group_dir;
 }
 
 ContainerOutput run_container_agent(
@@ -159,19 +88,18 @@ ContainerOutput run_container_agent(
     auto group_dir = resolve_group_folder_path(group.folder);
     fs::create_directories(group_dir);
 
-    auto mounts = build_volume_mounts(group, input.is_main);
+    prepare_agent_environment(group, input.is_main);
+
     std::string safe_name = group.folder;
     for (auto& c : safe_name) {
         if (!std::isalnum(c) && c != '-') c = '-';
     }
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-    std::string container_name = "nanoclaw-" + safe_name + "-" + std::to_string(now_ms);
+    std::string process_name = "nanoclaw-" + safe_name + "-" + std::to_string(now_ms);
 
-    auto container_args = build_container_args(mounts, container_name);
-
-    logger()->info("Spawning container agent: group={}, container={}, mounts={}",
-        group.name, container_name, mounts.size());
+    logger()->info("Spawning agent process: group={}, name={}",
+        group.name, process_name);
 
     auto logs_dir = fs::path(group_dir) / "logs";
     fs::create_directories(logs_dir);
@@ -187,13 +115,42 @@ ContainerOutput run_container_agent(
     if (!input.assistant_name.empty()) input_json["assistantName"] = input.assistant_name;
     std::string input_str = input_json.dump();
 
-    // Spawn container process
-    auto proc = platform::spawn_process(CONTAINER_RUNTIME_BIN, container_args);
+    // Build args: node <agent_runner_path>
+    std::vector<std::string> args = {cfg.agent_runner_path};
+
+    // Set environment variables for the agent-runner to know paths
+    auto project_root = fs::current_path().string();
+    auto group_ipc_dir = resolve_group_ipc_path(group.folder);
+    auto group_sessions_dir = (fs::path(cfg.data_dir) / "sessions" / group.folder / ".claude").string();
+
+    // Set env vars so the agent-runner can find its workspace
+    // These replace the Docker volume mount mapping
+    platform::setenv_portable("NANOCLAW_GROUP_DIR", group_dir);
+    platform::setenv_portable("NANOCLAW_IPC_DIR", group_ipc_dir);
+    platform::setenv_portable("NANOCLAW_PROJECT_DIR", project_root);
+    platform::setenv_portable("NANOCLAW_CLAUDE_DIR", group_sessions_dir);
+    platform::setenv_portable("TZ", cfg.timezone);
+
+    // Additional directories from group config
+    if (group.container_config) {
+        auto validated = validate_additional_mounts(group.container_config->additional_mounts, group.name, input.is_main);
+        if (!validated.empty()) {
+            std::string extra_dirs;
+            for (size_t i = 0; i < validated.size(); ++i) {
+                if (i > 0) extra_dirs += ";";
+                extra_dirs += validated[i].host_path;
+            }
+            platform::setenv_portable("NANOCLAW_EXTRA_DIRS", extra_dirs);
+        }
+    }
+
+    // Spawn node process directly
+    auto proc = platform::spawn_process("node", args);
     if (!proc.success) {
         return {"error", std::nullopt, std::nullopt, proc.error};
     }
 
-    on_process(proc.pid, container_name);
+    on_process(proc.pid, process_name);
 
     // Write input to stdin and close
     platform::write_fd(proc.stdin_fd, input_str.c_str(), input_str.size());
@@ -288,10 +245,10 @@ ContainerOutput run_container_agent(
     // Write log
     auto ts = now_iso();
     for (auto& c : ts) { if (c == ':' || c == '.') c = '-'; }
-    auto log_file = (logs_dir / ("container-" + ts + ".log")).string();
+    auto log_file = (logs_dir / ("agent-" + ts + ".log")).string();
     {
         std::ofstream log(log_file);
-        log << "=== Container Run Log ===\n"
+        log << "=== Agent Run Log ===\n"
             << "Timestamp: " << now_iso() << "\n"
             << "Group: " << group.name << "\n"
             << "IsMain: " << (input.is_main ? "true" : "false") << "\n"
@@ -303,14 +260,14 @@ ContainerOutput run_container_agent(
     }
 
     if (exit_code != 0) {
-        logger()->error("Container exited with error: group={}, code={}, duration={}ms", group.name, exit_code, duration);
+        logger()->error("Agent exited with error: group={}, code={}, duration={}ms", group.name, exit_code, duration);
         return {"error", std::nullopt, std::nullopt,
-            "Container exited with code " + std::to_string(exit_code) + ": " + stderr_buf.substr(0, std::min(stderr_buf.size(), size_t(200)))};
+            "Agent exited with code " + std::to_string(exit_code) + ": " + stderr_buf.substr(0, std::min(stderr_buf.size(), size_t(200)))};
     }
 
     // Streaming mode
     if (on_output) {
-        logger()->info("Container completed (streaming mode): group={}, duration={}ms", group.name, duration);
+        logger()->info("Agent completed (streaming mode): group={}, duration={}ms", group.name, duration);
         return {"success", std::nullopt, new_session_id};
     }
 
@@ -331,7 +288,7 @@ ContainerOutput run_container_agent(
         } catch (...) {}
     }
 
-    return {"error", std::nullopt, std::nullopt, "Failed to parse container output"};
+    return {"error", std::nullopt, std::nullopt, "Failed to parse agent output"};
 }
 
 void write_tasks_snapshot(

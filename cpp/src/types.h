@@ -131,9 +131,9 @@ struct ContainerOutput {
     std::optional<std::string> error;
 };
 
-struct VolumeMount {
+// Mount validation result (for additional directories)
+struct ValidatedMount {
     std::string host_path;
-    std::string container_path;
     bool readonly = false;
 };
 

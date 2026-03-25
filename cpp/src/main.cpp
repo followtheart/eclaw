@@ -406,10 +406,10 @@ int main(int argc, char* argv[]) {
     init_config();
 
     try {
-        ensure_container_runtime_running();
-        cleanup_orphans();
+        ensure_agent_runner_ready();
+        cleanup_orphan_processes();
     } catch (const std::exception& e) {
-        logger()->critical("Container runtime check failed: {}", e.what());
+        logger()->critical("Agent runner check failed: {}", e.what());
         return 1;
     }
 

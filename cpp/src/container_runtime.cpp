@@ -1,74 +1,61 @@
 #include "container_runtime.h"
+#include "config.h"
 #include "logger.h"
 #include "platform.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <sstream>
 #include <stdexcept>
 
 namespace nanoclaw {
 
-const std::string CONTAINER_RUNTIME_BIN = "docker";
+namespace fs = std::filesystem;
 
-std::vector<std::string> host_gateway_args() {
-#ifdef __linux__
-    return {"--add-host=host.docker.internal:host-gateway"};
-#else
-    return {};
-#endif
-}
+void ensure_agent_runner_ready() {
+    const auto& cfg = config();
 
-std::vector<std::string> readonly_mount_args(const std::string& host_path, const std::string& container_path) {
-    return {"-v", host_path + ":" + container_path + ":ro"};
-}
-
-std::string stop_container_cmd(const std::string& name) {
-    return CONTAINER_RUNTIME_BIN + " stop -t 1 " + name;
-}
-
-void ensure_container_runtime_running() {
-    std::string cmd = platform::suppress_stderr(CONTAINER_RUNTIME_BIN + " info");
+    // Check that node is available
+    std::string cmd = platform::suppress_stderr("node --version");
     int ret = platform::system_command(cmd);
     if (ret != 0) {
-        logger()->error("Failed to reach container runtime");
+        logger()->error("Node.js not found in PATH");
         fprintf(stderr, "\n"
             "╔════════════════════════════════════════════════════════════════╗\n"
-            "║  FATAL: Container runtime failed to start                      ║\n"
+            "║  FATAL: Node.js not found                                      ║\n"
             "║                                                                ║\n"
-            "║  Agents cannot run without a container runtime. To fix:        ║\n"
-            "║  1. Ensure Docker is installed and running                     ║\n"
-            "║  2. Run: docker info                                           ║\n"
+            "║  Agents require Node.js to run. To fix:                        ║\n"
+            "║  1. Install Node.js 20+                                        ║\n"
+            "║  2. Ensure 'node' is in PATH                                   ║\n"
             "║  3. Restart NanoClaw                                           ║\n"
             "╚════════════════════════════════════════════════════════════════╝\n\n");
-        throw std::runtime_error("Container runtime is required but failed to start");
+        throw std::runtime_error("Node.js is required but not found in PATH");
     }
-    logger()->debug("Container runtime already running");
+
+    // Check that agent-runner dist/index.js exists
+    if (!fs::exists(cfg.agent_runner_path)) {
+        logger()->error("Agent runner not found at {}", cfg.agent_runner_path);
+        fprintf(stderr, "\n"
+            "╔════════════════════════════════════════════════════════════════╗\n"
+            "║  FATAL: Agent runner not built                                 ║\n"
+            "║                                                                ║\n"
+            "║  The agent-runner TypeScript must be compiled first:            ║\n"
+            "║  1. cd container/agent-runner                                   ║\n"
+            "║  2. npm install && npm run build                                ║\n"
+            "║  3. Restart NanoClaw                                           ║\n"
+            "╚════════════════════════════════════════════════════════════════╝\n\n");
+        throw std::runtime_error("Agent runner not found at " + cfg.agent_runner_path);
+    }
+
+    logger()->info("Agent runner ready: {}", cfg.agent_runner_path);
 }
 
-void cleanup_orphans() {
-    try {
-        std::string cmd = platform::suppress_stderr(
-            CONTAINER_RUNTIME_BIN + " ps --filter name=nanoclaw- --format '{{.Names}}'");
-        auto output = platform::exec_command(cmd);
-
-        std::vector<std::string> orphans;
-        std::istringstream stream(output);
-        std::string line;
-        while (std::getline(stream, line)) {
-            if (!line.empty()) orphans.push_back(line);
-        }
-
-        for (const auto& name : orphans) {
-            platform::system_command(stop_container_cmd(name));
-        }
-
-        if (!orphans.empty()) {
-            logger()->info("Stopped {} orphaned containers", orphans.size());
-        }
-    } catch (const std::exception& e) {
-        logger()->warn("Failed to clean up orphaned containers: {}", e.what());
-    }
+void cleanup_orphan_processes() {
+    // In direct-host mode, orphan processes are cleaned up naturally
+    // when the parent exits or via OS-level process management.
+    // No Docker container cleanup needed.
+    logger()->debug("Orphan process cleanup: no-op in direct mode");
 }
 
 } // namespace nanoclaw

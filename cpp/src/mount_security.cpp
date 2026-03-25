@@ -173,18 +173,17 @@ MountValidationResult validate_mount(const AdditionalMount& mount, bool is_main)
     return result;
 }
 
-std::vector<VolumeMount> validate_additional_mounts(
+std::vector<ValidatedMount> validate_additional_mounts(
     const std::vector<AdditionalMount>& mounts,
     const std::string& group_name,
     bool is_main)
 {
-    std::vector<VolumeMount> validated;
+    std::vector<ValidatedMount> validated;
     for (const auto& mount : mounts) {
         auto result = validate_mount(mount, is_main);
         if (result.allowed) {
             validated.push_back({
                 result.real_host_path,
-                "/workspace/extra/" + result.resolved_container_path,
                 result.effective_readonly
             });
         } else {

@@ -22,9 +22,9 @@ MountValidationResult validate_mount(const AdditionalMount& mount, bool is_main)
 
 /**
  * Validate all additional mounts for a group.
- * Returns only validated (allowed) mounts.
+ * Returns only validated (allowed) mounts as host paths.
  */
-std::vector<VolumeMount> validate_additional_mounts(
+std::vector<ValidatedMount> validate_additional_mounts(
     const std::vector<AdditionalMount>& mounts,
     const std::string& group_name,
     bool is_main);

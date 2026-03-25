@@ -39,7 +39,7 @@ void GroupQueue::enqueue_message_check(const std::string& group_jid) {
         return;
     }
 
-    if (active_count_ >= config().max_concurrent_containers) {
+    if (active_count_ >= config().max_concurrent_agents) {
         state.pending_messages = true;
         if (std::find(waiting_groups_.begin(), waiting_groups_.end(), group_jid) == waiting_groups_.end()) {
             waiting_groups_.push_back(group_jid);
@@ -73,7 +73,7 @@ void GroupQueue::enqueue_task(const std::string& group_jid, const std::string& t
         return;
     }
 
-    if (active_count_ >= config().max_concurrent_containers) {
+    if (active_count_ >= config().max_concurrent_agents) {
         state.pending_tasks.push_back(std::move(task));
         if (std::find(waiting_groups_.begin(), waiting_groups_.end(), group_jid) == waiting_groups_.end()) {
             waiting_groups_.push_back(group_jid);
@@ -253,7 +253,7 @@ void GroupQueue::drain_group(const std::string& group_jid) {
 }
 
 void GroupQueue::drain_waiting() {
-    while (!waiting_groups_.empty() && active_count_ < config().max_concurrent_containers) {
+    while (!waiting_groups_.empty() && active_count_ < config().max_concurrent_agents) {
         auto next_jid = waiting_groups_.front();
         waiting_groups_.erase(waiting_groups_.begin());
         auto& state = get_group(next_jid);
@@ -275,15 +275,16 @@ void GroupQueue::drain_waiting() {
 void GroupQueue::shutdown(int /*grace_period_ms*/) {
     shutting_down_ = true;
 
-    std::vector<std::string> active_containers;
+    int active_processes = 0;
     for (const auto& [jid, state] : groups_) {
-        if (state.pid > 0 && !state.container_name.empty()) {
-            active_containers.push_back(state.container_name);
+        if (state.pid > 0) {
+            platform::terminate_process(state.pid);
+            active_processes++;
         }
     }
 
-    logger()->info("GroupQueue shutting down (active={}, detached containers={})",
-        active_count_, active_containers.size());
+    logger()->info("GroupQueue shutting down (active={}, terminated processes={})",
+        active_count_, active_processes);
 }
 
 } // namespace nanoclaw

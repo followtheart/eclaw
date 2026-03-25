@@ -12,17 +12,17 @@
 namespace nanoclaw {
 
 /**
- * Callback when container process is spawned.
+ * Callback when agent process is spawned.
  */
-using OnProcessCallback = std::function<void(pid_t pid, const std::string& container_name)>;
+using OnProcessCallback = std::function<void(pid_t pid, const std::string& process_name)>;
 
 /**
- * Callback for streaming output from container.
+ * Callback for streaming output from agent.
  */
 using OnOutputCallback = std::function<void(const ContainerOutput& output)>;
 
 /**
- * Run an agent in a container. Blocks until completion.
+ * Run an agent directly on the host. Blocks until completion.
  */
 ContainerOutput run_container_agent(
     const RegisteredGroup& group,
@@ -49,7 +49,7 @@ void write_tasks_snapshot(
     const std::vector<TaskSnapshot>& tasks);
 
 /**
- * Write available groups snapshot for container to read.
+ * Write available groups snapshot for agent to read.
  */
 void write_groups_snapshot(
     const std::string& group_folder,

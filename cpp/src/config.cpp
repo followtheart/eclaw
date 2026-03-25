@@ -64,15 +64,15 @@ void init_config() {
     g_config.groups_dir = (fs::path(project_root) / "groups").string();
     g_config.data_dir = (fs::path(project_root) / "data").string();
 
-    // Container settings
-    g_config.container_image = get_env("CONTAINER_IMAGE", "nanoclaw-agent:latest");
-    g_config.container_timeout = parse_int(get_env("CONTAINER_TIMEOUT", "1800000"), 1800000);
-    g_config.container_max_output_size = parse_int(get_env("CONTAINER_MAX_OUTPUT_SIZE", "10485760"), 10485760);
+    // Agent runner settings (replaces Docker container settings)
+    auto default_runner = (fs::path(project_root) / "container" / "agent-runner" / "dist" / "index.js").string();
+    g_config.agent_runner_path = get_env("AGENT_RUNNER_PATH", default_runner);
+    g_config.agent_timeout = parse_int(get_env("AGENT_TIMEOUT", "1800000"), 1800000);
     g_config.onecli_url = get_env("ONECLI_URL",
         env_config.count("ONECLI_URL") ? env_config["ONECLI_URL"] : "http://localhost:10254");
     g_config.idle_timeout = parse_int(get_env("IDLE_TIMEOUT", "1800000"), 1800000);
-    g_config.max_concurrent_containers = std::max(1,
-        parse_int(get_env("MAX_CONCURRENT_CONTAINERS", "5"), 5));
+    g_config.max_concurrent_agents = std::max(1,
+        parse_int(get_env("MAX_CONCURRENT_AGENTS", "5"), 5));
 
     // Trigger pattern: ^@AssistantName\b (case-insensitive)
     std::string pattern = "^@" + escape_regex(g_config.assistant_name) + "\\b";
